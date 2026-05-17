@@ -106,6 +106,21 @@ AuctionHouseBot::AuctionHouseBot() :
     RandomStackIncrementKey(1),
     RandomStackIncrementMisc(1),
     RandomStackIncrementGlyph(1),
+    MaximumStackSizeConsumable(0),
+    MaximumStackSizeContainer(0),
+    MaximumStackSizeWeapon(0),
+    MaximumStackSizeGem(0),
+    MaximumStackSizeArmor(0),
+    MaximumStackSizeReagent(0),
+    MaximumStackSizeProjectile(0),
+    MaximumStackSizeTradeGood(0),
+    MaximumStackSizeGeneric(0),
+    MaximumStackSizeRecipe(0),
+    MaximumStackSizeQuiver(0),
+    MaximumStackSizeQuest(0),
+    MaximumStackSizeKey(0),
+    MaximumStackSizeMisc(0),
+    MaximumStackSizeGlyph(0),
     PriceMultiplierCategoryConsumable(1),
     PriceMultiplierCategoryContainer(1),
     PriceMultiplierCategoryWeapon(1),
@@ -229,14 +244,39 @@ uint32 AuctionHouseBot::GetStackSizeForItem(ItemTemplate const* itemProto) const
         case ITEM_CLASS_GLYPH:          stackIncrement = RandomStackIncrementGlyph; break;
         default:                        stackIncrement = 1; break;
     }
+    stackIncrement = std::max(stackIncrement, (uint32)1);
+
+    uint32 configStackSizeMax = 0;
+    switch (itemProto->Class)
+    {
+        case ITEM_CLASS_CONSUMABLE:     configStackSizeMax = MaximumStackSizeConsumable; break;
+        case ITEM_CLASS_CONTAINER:      configStackSizeMax = MaximumStackSizeContainer; break;
+        case ITEM_CLASS_WEAPON:         configStackSizeMax = MaximumStackSizeWeapon; break;
+        case ITEM_CLASS_GEM:            configStackSizeMax = MaximumStackSizeGem; break;
+        case ITEM_CLASS_REAGENT:        configStackSizeMax = MaximumStackSizeReagent; break;
+        case ITEM_CLASS_ARMOR:          configStackSizeMax = MaximumStackSizeArmor; break;
+        case ITEM_CLASS_PROJECTILE:     configStackSizeMax = MaximumStackSizeProjectile; break;
+        case ITEM_CLASS_TRADE_GOODS:    configStackSizeMax = MaximumStackSizeTradeGood; break;
+        case ITEM_CLASS_GENERIC:        configStackSizeMax = MaximumStackSizeGeneric; break;
+        case ITEM_CLASS_RECIPE:         configStackSizeMax = MaximumStackSizeRecipe; break;
+        case ITEM_CLASS_QUIVER:         configStackSizeMax = MaximumStackSizeQuiver; break;
+        case ITEM_CLASS_QUEST:          configStackSizeMax = MaximumStackSizeQuest; break;
+        case ITEM_CLASS_KEY:            configStackSizeMax = MaximumStackSizeKey; break;
+        case ITEM_CLASS_MISC:           configStackSizeMax = MaximumStackSizeMisc; break;
+        case ITEM_CLASS_GLYPH:          configStackSizeMax = MaximumStackSizeGlyph; break;
+        default:                        configStackSizeMax = 0; break;
+    }
 
     if (stackRatio > urand(0, 99))
     {
-        uint32 numOfPossibleStackIncrements = (uint32)std::ceil((float)itemProto->GetMaxStackSize() / (float)stackIncrement);
+        uint32 maxPossibleStackSize = itemProto->GetMaxStackSize();
+        if (configStackSizeMax != 0)
+            maxPossibleStackSize = std::min(configStackSizeMax, maxPossibleStackSize);
+        uint32 numOfPossibleStackIncrements = (uint32)std::ceil((float)maxPossibleStackSize / (float)stackIncrement);
         uint32 numOfStacks = urand(1, numOfPossibleStackIncrements);
         uint32 randomStackSize = numOfStacks * stackIncrement;
-        if (randomStackSize > itemProto->GetMaxStackSize())
-            return itemProto->GetMaxStackSize();
+        if (randomStackSize > maxPossibleStackSize)
+            return maxPossibleStackSize;
         else
             return randomStackSize;
     }
@@ -1964,7 +2004,7 @@ void AuctionHouseBot::InitializeConfiguration()
     RandomStackRatioMisc = GetRandomStackValue("AuctionHouseBot.ListingStack.RandomRatio.Misc", 100);
     RandomStackRatioGlyph = GetRandomStackValue("AuctionHouseBot.ListingStack.RandomRatio.Glyph", 0);
 
-    // Stack Ratios
+    // Stack Increments
     RandomStackIncrementConsumable = GetRandomStackIncrementValue("AuctionHouseBot.ListingStack.RandomStackIncrement.Consumable", 5);
     RandomStackIncrementContainer = GetRandomStackIncrementValue("AuctionHouseBot.ListingStack.RandomStackIncrement.Container", 1);
     RandomStackIncrementWeapon = GetRandomStackIncrementValue("AuctionHouseBot.ListingStack.RandomStackIncrement.Weapon", 1);
@@ -1980,6 +2020,23 @@ void AuctionHouseBot::InitializeConfiguration()
     RandomStackIncrementKey = GetRandomStackIncrementValue("AuctionHouseBot.ListingStack.RandomStackIncrement.Key", 1);
     RandomStackIncrementMisc = GetRandomStackIncrementValue("AuctionHouseBot.ListingStack.RandomStackIncrement.Misc", 1);
     RandomStackIncrementGlyph = GetRandomStackIncrementValue("AuctionHouseBot.ListingStack.RandomStackIncrement.Glyph", 1);
+
+    // Max stack size
+    MaximumStackSizeConsumable = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Consumable", 0);
+    MaximumStackSizeContainer = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Container", 0);
+    MaximumStackSizeWeapon = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Weapon", 0);
+    MaximumStackSizeGem = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Gem", 0);
+    MaximumStackSizeArmor = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Armor", 0);
+    MaximumStackSizeReagent = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Reagent", 0);
+    MaximumStackSizeProjectile = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Projectile", 0);
+    MaximumStackSizeTradeGood = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.TradeGood", 0);
+    MaximumStackSizeGeneric = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Generic", 0);
+    MaximumStackSizeRecipe = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Recipe", 0);
+    MaximumStackSizeQuiver = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Quiver", 0);
+    MaximumStackSizeQuest = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Quest", 0);
+    MaximumStackSizeKey = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Key", 0);
+    MaximumStackSizeMisc = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Misc", 0);
+    MaximumStackSizeGlyph = sConfigMgr->GetOption<uint32>("AuctionHouseBot.ListingStack.MaxStackSize.Glyph", 0);
 
     // List proportions
     ItemListProportionNodesSeed.clear();
