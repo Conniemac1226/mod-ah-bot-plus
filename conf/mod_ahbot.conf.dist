@@ -107,6 +107,18 @@ AuctionHouseBot.CompleteItemValueOverride.Enabled = false
 AuctionHouseBot.CompleteItemValueOverride.Items = 
 AuctionHouseBot.CompleteItemValueOverride.DoApplyBidVariations = false
 AuctionHouseBot.CompleteItemValueOverride.DoApplyBuyoutVariations = false
+AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables = true
+
+###############################################################################
+#    AuctionHouseBot.MarketProfile
+#        Selects the active market phase profile used to scale pricing.
+#        Valid values: Launch, Mid, LateWrath.
+#        Launch approximates early Wrath scarcity and raid-consumable spikes.
+#        Mid approximates a stabilized mid-expansion economy.
+#        LateWrath approximates Icecrown-era steady-state pricing.
+###############################################################################
+
+AuctionHouseBot.MarketProfile = Launch
 
 ###############################################################################
 #    AuctionHouseBot.AdvancedListingRules.UseDropRates.Enabled
@@ -635,7 +647,7 @@ AuctionHouseBot.PriceMultiplier.ItemLevel.Category.Quiver = 0
 AuctionHouseBot.PriceMultiplier.ItemLevel.Category.Quest = 0
 AuctionHouseBot.PriceMultiplier.ItemLevel.Category.Key = 0
 AuctionHouseBot.PriceMultiplier.ItemLevel.Category.Misc = 0
-AuctionHouseBot.PriceMultiplier.ItemLevel.Category.Glyph = 0
+AuctionHouseBot.PriceMultiplier.ItemLevel.Category.Glyph = 4.0
 
 ## The following are applied in addition to any above, for fine tuning
 # Consumable
@@ -780,7 +792,7 @@ AuctionHouseBot.PriceMultiplier.CategoryMisc.QualityHeirloom    = 1.0
 
 # Glyph
 AuctionHouseBot.PriceMultiplier.CategoryGlyph.QualityPoor       = 1.0
-AuctionHouseBot.PriceMultiplier.CategoryGlyph.QualityNormal     = 14.0
+AuctionHouseBot.PriceMultiplier.CategoryGlyph.QualityNormal     = 1.0
 AuctionHouseBot.PriceMultiplier.CategoryGlyph.QualityUncommon   = 1.0
 AuctionHouseBot.PriceMultiplier.CategoryGlyph.QualityRare       = 1.0
 AuctionHouseBot.PriceMultiplier.CategoryGlyph.QualityEpic       = 1.0

@@ -29,6 +29,9 @@ Notes:
 - The characters used by the ahbot are not meant to be used ingame. If you use it to browse the auction house, you might have issues like "Searching for items..." displaying forever.
 - It takes a few hours for the auction house to fully populate, as only 75 items gets added by default every 'tick'.  You can change this in the config with the AuctionHouseBot.ItemsPerCycle variable.
 - All price multpliers (along with the advanced pricing, see config) are applied multiplicative.  Example: A Category of 1.5x, Quality of 2x, and CategoryQuality of 1.4x would make the multiplier 4.2 (1.5 x 2 x 1.4).  The advanced pricing would then multiply that value further.  Using item level price multpliers, which create a multiplier of itemlevel x value, is also multiplicitive along with the others.  You cannot use item level price multipliers and advanced pricing, as advanced pricing will take priority between the two.
+- The pricing profile is phase-aware. Set `AuctionHouseBot.MarketProfile` to `Launch`, `Mid`, or `LateWrath` to scale the same formulas to the current Wrath economy.
+- Seller listings use `IndividualProgression.ProgressionLimit` only when it is nonzero. A value of `0` is disabled in that module, so the AH bot falls back to `AuctionHouseBot.MarketProfile` for launch-era gating.
+- Potion-like consumables can bypass the fixed override list when `AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables` is enabled, which keeps the dynamic potion model active.
 - Bot-listed prices will not exceed 100k gold buyout.  This can be reduced via the configuration if you want.
 
 ### In-Game Commands

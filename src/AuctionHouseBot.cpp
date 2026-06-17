@@ -30,9 +30,21 @@
 #include "SharedDefines.h"
 #include "SpellMgr.h"
 #include <cmath>
+#include <algorithm>
+#include <cctype>
 
 #include <set>
 #include <unordered_map>
+
+#if __has_include("IndividualProgression.h")
+#include "IndividualProgression.h"
+#define AHBOT_HAS_INDIVIDUAL_PROGRESSION 1
+#elif __has_include("mod-individual-progression/src/IndividualProgression.h")
+#include "mod-individual-progression/src/IndividualProgression.h"
+#define AHBOT_HAS_INDIVIDUAL_PROGRESSION 1
+#else
+#define AHBOT_HAS_INDIVIDUAL_PROGRESSION 0
+#endif
 
 using namespace std;
 
@@ -52,6 +64,7 @@ AuctionHouseBot::AuctionHouseBot() :
     CompleteItemValueOverrideEnabled(false),
     CompleteItemValueOverrideDoApplyBidVariations(false),
     CompleteItemValueOverrideDoApplyBuyoutVariations(false),
+    CompleteItemValueOverrideIgnorePotionLikeConsumables(false),
     BuyoutVariationReducePercent(0.15f),
     BuyoutVariationAddPercent(0.25f),
     BidVariationHighReducePercent(0),
@@ -186,7 +199,8 @@ AuctionHouseBot::AuctionHouseBot() :
     LastBuyCycleCount(0),
     LastSellCycleCount(0),
     ActiveListMultipleItemID(0),
-    RemainingListMultipleCount(0)
+    RemainingListMultipleCount(0),
+    MarketProfile(AuctionHouseMarketProfile::Late)
 {
     AllianceConfig = FactionSpecificAuctionHouseConfig(2);
     HordeConfig = FactionSpecificAuctionHouseConfig(6);
@@ -195,6 +209,340 @@ AuctionHouseBot::AuctionHouseBot() :
 
 AuctionHouseBot::~AuctionHouseBot()
 {
+}
+
+bool AuctionHouseBot::ShouldBypassCompleteItemValueOverride(ItemTemplate const* itemProto) const
+{
+    if (!CompleteItemValueOverrideIgnorePotionLikeConsumables || !itemProto)
+        return false;
+
+    if (itemProto->Class != ITEM_CLASS_CONSUMABLE)
+        return false;
+
+    switch (itemProto->SubClass)
+    {
+        case ITEM_SUBCLASS_POTION:
+        case ITEM_SUBCLASS_ELIXIR:
+        case ITEM_SUBCLASS_FLASK:
+            return true;
+        default:
+            return false;
+    }
+}
+
+AuctionHouseMarketProfile AuctionHouseBot::GetMarketProfileFromConfig(std::string const& marketProfileName) const
+{
+    std::string profile = marketProfileName;
+    std::transform(profile.begin(), profile.end(), profile.begin(), [](unsigned char value)
+    {
+        return static_cast<char>(std::tolower(value));
+    });
+
+    if (profile == "launch" || profile == "phase1" || profile == "phase_1")
+        return AuctionHouseMarketProfile::Launch;
+
+    if (profile == "mid" || profile == "phase2" || profile == "phase_2")
+        return AuctionHouseMarketProfile::Mid;
+
+    return AuctionHouseMarketProfile::Late;
+}
+
+const char* AuctionHouseBot::GetMarketProfileName() const
+{
+    switch (MarketProfile)
+    {
+        case AuctionHouseMarketProfile::Launch:
+            return "Launch";
+        case AuctionHouseMarketProfile::Mid:
+            return "Mid";
+        case AuctionHouseMarketProfile::Late:
+        default:
+            return "LateWrath";
+    }
+}
+
+uint8 AuctionHouseBot::GetSellerProgressionState() const
+{
+#if AHBOT_HAS_INDIVIDUAL_PROGRESSION
+    if (sIndividualProgression != nullptr && sIndividualProgression->enabled &&
+        sIndividualProgression->progressionLimit > 0)
+    {
+        return static_cast<uint8>(std::clamp(sIndividualProgression->progressionLimit, 0, 255));
+    }
+#endif
+
+    switch (MarketProfile)
+    {
+        case AuctionHouseMarketProfile::Launch:
+            return 0;
+        case AuctionHouseMarketProfile::Mid:
+            return 15;
+        case AuctionHouseMarketProfile::Late:
+        default:
+            return 18;
+    }
+}
+
+uint32 AuctionHouseBot::GetProgressionItemLevelCap(uint8 progressionState) const
+{
+    switch (progressionState)
+    {
+        case 0:
+        case 1:
+            return 66;
+        case 2:
+            return 78;
+        case 3:
+            return 90;
+        case 4:
+        case 5:
+            return 100;
+        case 6:
+        case 7:
+        case 8:
+            return 115;
+        case 9:
+            return 141;
+        case 10:
+        case 11:
+            return 159;
+        case 12:
+            return 164;
+        case 13:
+            return 213;
+        case 14:
+            return 239;
+        case 15:
+            return 245;
+        case 16:
+        case 17:
+        case 18:
+        default:
+            return 277;
+    }
+}
+
+uint32 AuctionHouseBot::GetComparableItemLevelForProgression(ItemTemplate const* itemProto) const
+{
+    if (!itemProto)
+        return 0;
+
+    if (itemProto->Class == ITEM_CLASS_RECIPE)
+    {
+        ItemTemplate const* producedItemTemplate = GetProducedItemFromRecipe(itemProto);
+        if (producedItemTemplate != nullptr)
+            return producedItemTemplate->ItemLevel;
+    }
+
+    return itemProto->ItemLevel;
+}
+
+bool AuctionHouseBot::IsItemAllowedForProgression(ItemTemplate const* itemProto, uint8 progressionState) const
+{
+    if (itemProto == nullptr)
+        return false;
+
+    if (itemProto->Class == ITEM_CLASS_GEM && progressionState < 8)
+        return false;
+
+    if (itemProto->Class == ITEM_CLASS_GLYPH && progressionState < 13)
+        return false;
+
+    if (itemProto->Class == ITEM_CLASS_RECIPE)
+    {
+        ItemTemplate const* producedItemTemplate = GetProducedItemFromRecipe(itemProto);
+        if (producedItemTemplate != nullptr && !IsItemAllowedForProgression(producedItemTemplate, progressionState))
+            return false;
+    }
+
+    uint32 const progressionItemLevelCap = GetProgressionItemLevelCap(progressionState);
+    uint32 const itemLevelToCompare = GetComparableItemLevelForProgression(itemProto);
+    if (itemLevelToCompare > progressionItemLevelCap)
+        return false;
+
+    return true;
+}
+
+float AuctionHouseBot::GetMarketProfileMultiplier(ItemTemplate const* itemProto) const
+{
+    if (!itemProto)
+        return 1.0f;
+
+    float multiplier = 1.0f;
+
+    switch (MarketProfile)
+    {
+        case AuctionHouseMarketProfile::Launch:
+        {
+            multiplier = 1.0f;
+            switch (itemProto->Class)
+            {
+                case ITEM_CLASS_CONSUMABLE:
+                    multiplier = 1.20f;
+                    switch (itemProto->SubClass)
+                    {
+                        case ITEM_SUBCLASS_POTION:
+                            multiplier *= 1.70f;
+                            break;
+                        case ITEM_SUBCLASS_ELIXIR:
+                            multiplier *= 1.50f;
+                            break;
+                        case ITEM_SUBCLASS_FLASK:
+                            multiplier *= 1.90f;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                case ITEM_CLASS_GEM:
+                    multiplier = 1.50f;
+                    break;
+                case ITEM_CLASS_TRADE_GOODS:
+                    multiplier = 1.15f;
+                    switch (itemProto->SubClass)
+                    {
+                        case ITEM_SUBCLASS_CLOTH:
+                            multiplier *= 1.05f;
+                            break;
+                        case ITEM_SUBCLASS_HERB:
+                            multiplier *= 1.45f;
+                            break;
+                        case ITEM_SUBCLASS_METAL_STONE:
+                            multiplier *= 1.35f;
+                            break;
+                        case ITEM_SUBCLASS_LEATHER:
+                            multiplier *= 1.20f;
+                            break;
+                        case ITEM_SUBCLASS_ENCHANTING:
+                            multiplier *= 1.25f;
+                            break;
+                        case ITEM_SUBCLASS_ELEMENTAL:
+                            multiplier *= 1.35f;
+                            break;
+                        case ITEM_SUBCLASS_MEAT:
+                            multiplier *= 1.10f;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                case ITEM_CLASS_RECIPE:
+                    multiplier = 1.25f;
+                    break;
+                case ITEM_CLASS_GLYPH:
+                    multiplier = 6.0f;
+                    break;
+                case ITEM_CLASS_WEAPON:
+                case ITEM_CLASS_ARMOR:
+                    multiplier = 1.08f;
+                    break;
+                case ITEM_CLASS_REAGENT:
+                    multiplier = 1.03f;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        }
+        case AuctionHouseMarketProfile::Mid:
+        {
+            multiplier = 1.0f;
+            switch (itemProto->Class)
+            {
+                case ITEM_CLASS_CONSUMABLE:
+                    multiplier = 1.08f;
+                    switch (itemProto->SubClass)
+                    {
+                        case ITEM_SUBCLASS_POTION:
+                            multiplier *= 1.30f;
+                            break;
+                        case ITEM_SUBCLASS_ELIXIR:
+                            multiplier *= 1.15f;
+                            break;
+                        case ITEM_SUBCLASS_FLASK:
+                            multiplier *= 1.35f;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                case ITEM_CLASS_GEM:
+                    multiplier = 1.20f;
+                    break;
+                case ITEM_CLASS_TRADE_GOODS:
+                    multiplier = 1.05f;
+                    switch (itemProto->SubClass)
+                    {
+                        case ITEM_SUBCLASS_CLOTH:
+                            multiplier *= 1.00f;
+                            break;
+                        case ITEM_SUBCLASS_HERB:
+                            multiplier *= 1.15f;
+                            break;
+                        case ITEM_SUBCLASS_METAL_STONE:
+                            multiplier *= 1.12f;
+                            break;
+                        case ITEM_SUBCLASS_LEATHER:
+                            multiplier *= 1.05f;
+                            break;
+                        case ITEM_SUBCLASS_ENCHANTING:
+                            multiplier *= 1.08f;
+                            break;
+                        case ITEM_SUBCLASS_ELEMENTAL:
+                            multiplier *= 1.10f;
+                            break;
+                        case ITEM_SUBCLASS_MEAT:
+                            multiplier *= 1.03f;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                case ITEM_CLASS_RECIPE:
+                    multiplier = 1.10f;
+                    break;
+                case ITEM_CLASS_GLYPH:
+                    multiplier = 2.5f;
+                    break;
+                case ITEM_CLASS_WEAPON:
+                case ITEM_CLASS_ARMOR:
+                    multiplier = 1.04f;
+                    break;
+                case ITEM_CLASS_REAGENT:
+                    multiplier = 1.02f;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        }
+        case AuctionHouseMarketProfile::Late:
+        default:
+        {
+            multiplier = 1.0f;
+            if (itemProto->Class == ITEM_CLASS_CONSUMABLE)
+            {
+                switch (itemProto->SubClass)
+                {
+                    case ITEM_SUBCLASS_POTION:
+                    case ITEM_SUBCLASS_ELIXIR:
+                    case ITEM_SUBCLASS_FLASK:
+                        multiplier = 1.0f;
+                        break;
+                    default:
+                        multiplier = 1.0f;
+                        break;
+                }
+            }
+            else if (itemProto->Class == ITEM_CLASS_GLYPH)
+            {
+                multiplier = 1.0f;
+            }
+            break;
+        }
+    }
+
+    return multiplier;
 }
 
 uint32 AuctionHouseBot::GetStackSizeForItem(ItemTemplate const* itemProto) const
@@ -286,7 +634,7 @@ uint32 AuctionHouseBot::GetStackSizeForItem(ItemTemplate const* itemProto) const
 
 void AuctionHouseBot::CalculateItemValue(ItemTemplate const* itemProto, uint64& outBidPrice, uint64& outBuyoutPrice)
 {
-    if (CompleteItemValueOverrideEnabled == true)
+    if (CompleteItemValueOverrideEnabled == true && !ShouldBypassCompleteItemValueOverride(itemProto))
     {
         auto it = CompleteItemValueOverrideItemListByItemID.find(itemProto->ItemId);
         if (it != CompleteItemValueOverrideItemListByItemID.end())
@@ -426,6 +774,7 @@ void AuctionHouseBot::CalculateItemValue(ItemTemplate const* itemProto, uint64& 
     outBuyoutPrice *= classPriceMultiplier;
     outBuyoutPrice *= classQualityPriceMultiplier;
     outBuyoutPrice *= static_cast<float>(advancedPricingMultiplier);
+    outBuyoutPrice *= GetMarketProfileMultiplier(itemProto);
 
     // Only apply item level multiplier if set, and no advanced pricing has been enabled
     if (itemLevelPriceMultplier > 0.0f && itemProto->ItemLevel > 0 && advancedPricingMultiplier == 1.0f)
@@ -635,7 +984,7 @@ float AuctionHouseBot::GetAdvancedPricingMultiplier(ItemTemplate const* itemProt
     return static_cast<float>(advancedPricingMultiplier);
 }
 
-ItemTemplate const* AuctionHouseBot::GetProducedItemFromRecipe(ItemTemplate const* recipeItemTemplate)
+ItemTemplate const* AuctionHouseBot::GetProducedItemFromRecipe(ItemTemplate const* recipeItemTemplate) const
 {
     if (!recipeItemTemplate)
         return nullptr;
@@ -1131,6 +1480,19 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
             }
 
             Player* AHBplayer = AHBPlayers[urand(0, AHBPlayers.size() - 1)];
+            uint8 sellerProgressionState = GetSellerProgressionState();
+
+            if (!IsItemAllowedForProgression(prototype, sellerProgressionState))
+            {
+                if (debug_Out_Filters)
+                    LOG_ERROR("module", "AHSeller: Item {} disabled (Progression state {})", prototype->ItemId, sellerProgressionState);
+                if (itemID == ActiveListMultipleItemID)
+                {
+                    ActiveListMultipleItemID = 0;
+                    RemainingListMultipleCount = 0;
+                }
+                continue;
+            }
 
             Item* item = Item::CreateItem(itemID, 1, AHBplayer);
             if (item == NULL)
@@ -1933,6 +2295,10 @@ void AuctionHouseBot::InitializeConfiguration()
     AddItemValuePairsToItemIDMap(CompleteItemValueOverrideItemListByItemID, sConfigMgr->GetOption<std::string>("AuctionHouseBot.CompleteItemValueOverride.Items", ""));
     CompleteItemValueOverrideDoApplyBidVariations = sConfigMgr->GetOption<bool>("AuctionHouseBot.CompleteItemValueOverride.DoApplyBidVariations", false);
     CompleteItemValueOverrideDoApplyBuyoutVariations = sConfigMgr->GetOption<bool>("AuctionHouseBot.CompleteItemValueOverride.DoApplyBuyoutVariations", false);
+    CompleteItemValueOverrideIgnorePotionLikeConsumables = sConfigMgr->GetOption<bool>("AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables", true);
+    MarketProfile = GetMarketProfileFromConfig(sConfigMgr->GetOption<std::string>("AuctionHouseBot.MarketProfile", "LateWrath"));
+    LOG_INFO("module", "AuctionHouseBot: market profile set to {}", GetMarketProfileName());
+    LOG_INFO("module", "AuctionHouseBot: potion-like complete overrides {}", CompleteItemValueOverrideIgnorePotionLikeConsumables ? "enabled" : "disabled");
 
     // Buyer & Seller core properties
     SetCyclesBetweenBuyOrSell();

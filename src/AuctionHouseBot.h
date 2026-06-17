@@ -41,6 +41,13 @@ struct ListProportionNode
     uint32 Proportion = 0;
 };
 
+enum class AuctionHouseMarketProfile : uint8
+{
+    Launch,
+    Mid,
+    Late
+};
+
 class FactionSpecificAuctionHouseConfig
 {
 private:
@@ -140,6 +147,7 @@ private:
     std::unordered_map<uint32, uint64> CompleteItemValueOverrideItemListByItemID;
     bool CompleteItemValueOverrideDoApplyBidVariations;
     bool CompleteItemValueOverrideDoApplyBuyoutVariations;
+    bool CompleteItemValueOverrideIgnorePotionLikeConsumables;
     float BuyoutVariationReducePercent;
     float BuyoutVariationAddPercent;
     float BidVariationHighReducePercent;
@@ -323,6 +331,7 @@ private:
     std::set<uint32> AdvancedListingRuleUseDropRatesRecipeAffectedQualities;
     float AdvancedListingRuleUseDropRatesMinDropRate;
     std::unordered_set<uint32> QuestRewardItemIDs;
+    AuctionHouseMarketProfile MarketProfile;
 
     FactionSpecificAuctionHouseConfig AllianceConfig;
     FactionSpecificAuctionHouseConfig HordeConfig;
@@ -360,6 +369,14 @@ public:
     const char* GetCategoryName(ItemClass category);
     uint32 GetStackSizeForItem(ItemTemplate const* itemProto) const;
     void CalculateItemValue(ItemTemplate const* itemProto, uint64& outBidPrice, uint64& outBuyoutPrice);
+    bool ShouldBypassCompleteItemValueOverride(ItemTemplate const* itemProto) const;
+    AuctionHouseMarketProfile GetMarketProfileFromConfig(std::string const& marketProfileName) const;
+    const char* GetMarketProfileName() const;
+    float GetMarketProfileMultiplier(ItemTemplate const* itemProto) const;
+    uint8 GetSellerProgressionState() const;
+    uint32 GetProgressionItemLevelCap(uint8 progressionState) const;
+    uint32 GetComparableItemLevelForProgression(ItemTemplate const* itemProto) const;
+    bool IsItemAllowedForProgression(ItemTemplate const* itemProto, uint8 progressionState) const;
     void PopulateItemDropChances();
     void PopulateItemDropChancesForCategoryAndQuality(ItemClass category, std::string qualities);
     void InitializeAdvancedListingRuleUseDropRatesTiers();
@@ -371,7 +388,7 @@ public:
     bool HandleAdvancedListingRuleUseDropRates(ItemTemplate const*& proto);
     int GetItemDropChanceTier(double dropRate);
     float GetAdvancedPricingMultiplier(ItemTemplate const* itemProto);
-    ItemTemplate const* GetProducedItemFromRecipe(ItemTemplate const* recipeItemTemplate);
+    ItemTemplate const* GetProducedItemFromRecipe(ItemTemplate const* recipeItemTemplate) const;
     std::unordered_set<uint32> GetItemIDsProducedByRecipes();
     bool IsItemADisabledRecipeProducedClassSubclass(ItemTemplate const* itemTemplate);
     void PopulateItemCandidatesAndProportions();
