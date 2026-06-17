@@ -104,7 +104,7 @@ AuctionHouseBot.ListingExpireTimeInSecondsMax = 86400
 ###############################################################################
 
 AuctionHouseBot.CompleteItemValueOverride.Enabled = false
-AuctionHouseBot.CompleteItemValueOverride.Items = 
+AuctionHouseBot.CompleteItemValueOverride.Items = 23720:100000000,38576:500000000,49282:500000000,35225:75000000,49285:75000000,35226:600000000,49286:600000000,36908:750000,37663:2000000,45087:4000000,47556:3750000,49908:22000000
 AuctionHouseBot.CompleteItemValueOverride.DoApplyBidVariations = false
 AuctionHouseBot.CompleteItemValueOverride.DoApplyBuyoutVariations = false
 AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables = true
@@ -521,9 +521,9 @@ AuctionHouseBot.PriceMinimumCenterBase.UseItemSellPriceIfHigher = true
 
 AuctionHouseBot.PriceMinimumCenterBase.Consumable = 1000
 AuctionHouseBot.PriceMinimumCenterBase.Container = 1000
-AuctionHouseBot.PriceMinimumCenterBase.Weapon = 20000
+AuctionHouseBot.PriceMinimumCenterBase.Weapon = 200000
 AuctionHouseBot.PriceMinimumCenterBase.Gem = 1000
-AuctionHouseBot.PriceMinimumCenterBase.Armor = 18000
+AuctionHouseBot.PriceMinimumCenterBase.Armor = 180000
 AuctionHouseBot.PriceMinimumCenterBase.Reagent = 1000 
 AuctionHouseBot.PriceMinimumCenterBase.Projectile = 5
 AuctionHouseBot.PriceMinimumCenterBase.TradeGood = 2500
