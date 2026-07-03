@@ -699,7 +699,10 @@ void AuctionHouseBot::CalculateItemValue(ItemTemplate const* itemProto, uint64& 
     default: break;
     }
 
-    float classQualityPriceMultiplier = PriceMultiplierCategoryQuality[itemProto->Class][itemProto->Quality];
+    // Custom items missing from Item.dbc skip the core's class/quality validation, so bounds check before indexing
+    float classQualityPriceMultiplier = 1;
+    if (itemProto->Class < MAX_ITEM_CLASS && itemProto->Quality < MAX_ITEM_QUALITY)
+        classQualityPriceMultiplier = PriceMultiplierCategoryQuality[itemProto->Class][itemProto->Quality];
 
     float advancedPricingMultiplier = GetAdvancedPricingMultiplier(itemProto);
 
@@ -1425,6 +1428,11 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
 
         while (batchCount < 500 && itemsGenerated < newItemsToListCount)
         {
+            // GetRandomItemIDForListing can disable the seller mid-cycle, and every failed attempt must count
+            // against the batch limit or a misconfigured item list spins this loop forever on the world thread
+            if (!SellingBotEnabled)
+                break;
+
             // Either generate a new item ID to list, or grab from the remaining list
             uint32 itemID;
             if (ActiveListMultipleItemID != 0)
@@ -1436,6 +1444,8 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
                 {
                     if (debug_Out)
                         LOG_ERROR("module", "AHSeller: prototype == NULL");
+                    ActiveListMultipleItemID = 0;
+                    batchCount++;
                     continue;
                 }
 
@@ -1450,6 +1460,7 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
                 {
                     if (debug_Out)
                         LOG_ERROR("module", "AHSeller: Item::CreateItem() failed as the ItemID is 0");
+                    batchCount++;
                     continue;
                 }
 
@@ -1458,6 +1469,7 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
                 {
                     if (debug_Out)
                         LOG_ERROR("module", "AHSeller: prototype == NULL");
+                    batchCount++;
                     continue;
                 }
 
@@ -1466,7 +1478,11 @@ void AuctionHouseBot::AddNewAuctions(std::vector<Player*> AHBPlayers, FactionSpe
                     bool foundDBDropRatesItem = HandleAdvancedListingRuleUseDropRates(prototype);
                     if (foundDBDropRatesItem)
                         itemID = prototype->ItemId;
-                    else continue;
+                    else
+                    {
+                        batchCount++;
+                        continue;
+                    }
                 }
 
                 if (ItemListProportionMultipliedItemIDs.find(itemID) != ItemListProportionMultipliedItemIDs.end() &&
@@ -1553,6 +1569,10 @@ bool AuctionHouseBot::HandleAdvancedListingRuleUseDropRates(ItemTemplate const*&
 {
     // The AHBot has chosen a rare/epic armor/weapon/recipe, so select another item
     //   of that type based on drop rates. This way ListProportions are respected.
+
+    // Custom items missing from Item.dbc skip the core's class/quality validation, so bounds check before indexing
+    if (proto->Class >= ItemTiersByClassAndQuality.size() || proto->Quality >= ItemTiersByClassAndQuality[proto->Class].size())
+        return false;
 
     // Roll for rarity tier
     double r = 100.0 * (urand(0, INT32_MAX) / static_cast<double>(INT32_MAX));
@@ -1857,11 +1877,15 @@ void AuctionHouseBot::PopulateItemDropChancesForCategoryAndQuality(ItemClass cat
             for (uint32 id : candidates)
             {
                 ItemTemplate const* proto = sObjectMgr->GetItemTemplate(id);
-                if (!IsItemCategoryQualityInDBDropRatesConfig(proto))
+                if (!proto || !IsItemCategoryQualityInDBDropRatesConfig(proto))
+                    continue;
+
+                // Custom items missing from Item.dbc skip the core's class/quality validation, so bounds check
+                if (proto->Class >= ItemTiersByClassAndQuality.size() || proto->Quality >= ItemTiersByClassAndQuality[proto->Class].size())
                     continue;
 
                 // Skip items that haven't been populated yet.
-                if (!CachedItemDropRates.contains(id)) 
+                if (!CachedItemDropRates.contains(id))
                     continue;
 
                 double rate = CachedItemDropRates[id];
@@ -2052,6 +2076,12 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
 
         // get item prototype
         ItemTemplate const* prototype = sObjectMgr->GetItemTemplate(auction->item_template);
+        if (!prototype)
+        {
+            if (debug_Out)
+                LOG_ERROR("module", "AHBuyer: Item template {} for auction {} does not exist, skipping", auction->item_template, auction->Id);
+            continue;
+        }
 
         // Calculate a potential price for the item
         uint64 willingToSpendPerItemPrice = 0;
@@ -2087,16 +2117,18 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
             }
         }
 
-        // Check that the item isn't listed above Vendor sell price
+        // Check that the item isn't listed above Vendor sell price. Out-of-range entries (items added after the
+        // price table was built) get UINT32_MAX, which behaves the same as "not sold by a vendor"
         bool preventedOverpayingForVendorItem = false;
-        if (PreventOverpayingForVendorItems && vendorItemsPrices[prototype->ItemId] > 0)
+        uint32 vendorSellPrice = prototype->ItemId < vendorItemsPrices.size() ? vendorItemsPrices[prototype->ItemId] : UINT32_MAX;
+        if (PreventOverpayingForVendorItems && vendorSellPrice > 0)
         {
-            if (doBuyout && auction->buyout > vendorItemsPrices[prototype->ItemId])
+            if (doBuyout && auction->buyout > vendorSellPrice)
             {
                 doBuyout = false;
                 preventedOverpayingForVendorItem = true;
             }
-            if (doBid && calcBidAmount > vendorItemsPrices[prototype->ItemId])
+            if (doBid && calcBidAmount > vendorSellPrice)
             {
                 doBid = false;
                 preventedOverpayingForVendorItem = true;
@@ -2118,7 +2150,7 @@ void AuctionHouseBot::AddNewAuctionBuyerBotBid(std::vector<Player*> AHBPlayers, 
             LOG_INFO("module", "AHBuyer: Vendor Buy Price: {}", prototype->BuyPrice);
             LOG_INFO("module", "AHBuyer: Vendor Sell Price (Base): {}", prototype->SellPrice);
             if (PreventOverpayingForVendorItems == true)
-                LOG_INFO("module", "AHBuyer: Vender Sell Price (Vendor): {}", vendorItemsPrices[prototype->ItemId]);
+                LOG_INFO("module", "AHBuyer: Vender Sell Price (Vendor): {}", vendorSellPrice);
             LOG_INFO("module", "AHBuyer: Deposit: {}", auction->deposit);
             LOG_INFO("module", "AHBuyer: Bonding: {}", prototype->Bonding);
             LOG_INFO("module", "AHBuyer: Quality: {}", prototype->Quality);
@@ -2919,10 +2951,16 @@ void AuctionHouseBot::PopulateVendorItemsPrices()
 {
     // Load vendor items' prices into a vector for fast lookup
     QueryResult r = WorldDatabase.Query("SELECT MAX(entry) FROM item_template");
+    if (!r)
+    {
+        vendorItemsPrices.clear();
+        return;
+    }
     Field* f = r->Fetch();
-    uint32_t numItems = f[0].Get<uint32>();
-    vendorItemsPrices = std::vector<uint32>(numItems, UINT32_MAX);
-    
+    uint32_t maxItemID = f[0].Get<uint32>();
+    // Size by max entry + 1 so the highest entry itself is a valid index
+    vendorItemsPrices = std::vector<uint32>(maxItemID + 1, UINT32_MAX);
+
     QueryResult result = WorldDatabase.Query("SELECT v.entry, MIN(v.SellPrice) AS SellPrice FROM item_template v JOIN npc_vendor p ON v.entry = p.item WHERE v.class != {} GROUP BY v.entry", ITEM_CLASS_TRADE_GOODS);
     if (result)
     {
@@ -2931,8 +2969,9 @@ void AuctionHouseBot::PopulateVendorItemsPrices()
             Field* pFields = result->Fetch();
             uint32_t itemID = pFields[0].Get<uint32>();
             uint32_t itemPrice = pFields[1].Get<uint32>();
-            vendorItemsPrices[itemID] = itemPrice;
-        } while (result->NextRow()); 
+            if (itemID < vendorItemsPrices.size())
+                vendorItemsPrices[itemID] = itemPrice;
+        } while (result->NextRow());
     }
 }
 
