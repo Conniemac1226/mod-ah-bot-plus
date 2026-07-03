@@ -110,6 +110,29 @@ public:
             oldBidder->GetSession()->SendAuctionBidderNotification((uint32)auction->GetHouseId(), auction->Id, ObjectGuid::Create<HighGuid::Player>(auctionbot->CurrentBotCharGUID), newPrice, auction->GetAuctionOutBid(), auction->item_template);
     }
 
+    void OnBeforeAuctionHouseMgrSendAuctionWonMail(AuctionHouseMgr* /*auctionHouseMgr*/, AuctionEntry* /*auction*/, Player* bidder, uint32& /*bidder_accId*/, bool& sendNotification, bool& updateAchievementCriteria, bool& /*sendMail*/) override
+    {
+        // The bot buyer is a shell Player that never went through a full load (no map, no achievement data),
+        // so suppress the paths that would touch that missing state when it wins an auction
+        if (bidder)
+        {
+            bool isAHBot = false;
+            for (AuctionHouseBotCharacter character : auctionbot->AHCharacters)
+            {
+                if (character.CharacterGUID == bidder->GetGUID().GetCounter())
+                {
+                    isAHBot = true;
+                    break;
+                }
+            }
+            if (isAHBot == true)
+            {
+                sendNotification = false;
+                updateAchievementCriteria = false;
+            }
+        }
+    }
+
     void OnBeforeAuctionHouseMgrUpdate() override
     {
         auctionbot->Update();
