@@ -110,6 +110,7 @@ AuctionHouseBot.CompleteItemValueOverride.DoApplyBuyoutVariations = false
 AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables = true
 AuctionHouseBot.MarketProfile = Launch
 AuctionHouseBot.PricingCsvFile = modules/mod_ahbot_pricing.csv
+AuctionHouseBot.DisabledInvalidItemIDs =
 
 ###############################################################################
 #    AuctionHouseBot.AdvancedListingRules.UseDropRates.Enabled

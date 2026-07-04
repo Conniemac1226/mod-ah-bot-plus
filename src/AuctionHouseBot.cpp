@@ -3150,7 +3150,7 @@ bool AuctionHouseBot::ApplyPricingCsvOption(std::string const& optionName, std::
     static constexpr std::string_view priceMultiplierCategoryPrefix = "AuctionHouseBot.PriceMultiplier.Category.";
     static constexpr std::string_view priceMultiplierQualityPrefix = "AuctionHouseBot.PriceMultiplier.Quality.";
     static constexpr std::string_view priceMultiplierItemLevelPrefix = "AuctionHouseBot.PriceMultiplier.ItemLevel.Category.";
-    static constexpr std::string_view priceMultiplierCategoryMatrixPrefix = "AuctionHouseBot.PriceMultiplier.Category";
+    static constexpr std::string_view priceMultiplierCategoryMatrixPrefix = "AuctionHouseBot.PriceMultiplier.Category.";
     static constexpr std::string_view priceMultiplierMountPrefix = "AuctionHouseBot.PriceMultiplier.CategoryMount.Quality";
     static constexpr std::string_view priceMultiplierPetPrefix = "AuctionHouseBot.PriceMultiplier.CategoryPet.Quality";
     static constexpr std::string_view advancedPricingPrefix = "AuctionHouseBot.AdvancedPricing.";
