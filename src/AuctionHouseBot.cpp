@@ -29,9 +29,15 @@
 #include "ItemTemplate.h"
 #include "SharedDefines.h"
 #include "SpellMgr.h"
+#include "StringConvert.h"
+#include "StringFormat.h"
 #include <cmath>
 #include <algorithm>
 #include <cctype>
+#include <fstream>
+#include <locale>
+#include <sstream>
+#include <string_view>
 
 #include <set>
 #include <unordered_map>
@@ -47,6 +53,50 @@
 #endif
 
 using namespace std;
+
+namespace
+{
+    std::string TrimCopy(std::string value)
+    {
+        return Acore::String::Trim(value, std::locale());
+    }
+
+    bool StartsWith(std::string const& value, std::string const& prefix)
+    {
+        return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    std::string StripOptionalQuotes(std::string value)
+    {
+        if (value.size() >= 2)
+        {
+            if ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))
+            {
+                value.erase(value.begin());
+                value.pop_back();
+            }
+        }
+
+        return value;
+    }
+
+    std::string NormalizeCsvListValue(std::string value)
+    {
+        std::replace(value.begin(), value.end(), ';', ',');
+        return value;
+    }
+
+    template <typename ValueType>
+    bool ParseCsvValue(std::string const& value, ValueType& outValue)
+    {
+        auto parsedValue = Acore::StringTo<ValueType>(value);
+        if (!parsedValue)
+            return false;
+
+        outValue = *parsedValue;
+        return true;
+    }
+}
 
 AuctionHouseBot::AuctionHouseBot() :
     debug_Out(false),
@@ -249,7 +299,7 @@ AuctionHouseMarketProfile AuctionHouseBot::GetMarketProfileFromConfig(std::strin
 
 const char* AuctionHouseBot::GetMarketProfileName() const
 {
-    switch (MarketProfile)
+    switch (GetEffectiveMarketProfile())
     {
         case AuctionHouseMarketProfile::Launch:
             return "Launch";
@@ -259,6 +309,26 @@ const char* AuctionHouseBot::GetMarketProfileName() const
         default:
             return "LateWrath";
     }
+}
+
+AuctionHouseMarketProfile AuctionHouseBot::GetEffectiveMarketProfile() const
+{
+#if AHBOT_HAS_INDIVIDUAL_PROGRESSION
+    if (sIndividualProgression != nullptr && sIndividualProgression->enabled &&
+        sIndividualProgression->progressionLimit > 0)
+    {
+        uint8 const progressionState = static_cast<uint8>(std::clamp(sIndividualProgression->progressionLimit, 0, 255));
+        if (progressionState < static_cast<uint8>(PROGRESSION_PRE_TBC))
+            return AuctionHouseMarketProfile::Launch;
+
+        if (progressionState < static_cast<uint8>(PROGRESSION_TBC_TIER_5))
+            return AuctionHouseMarketProfile::Mid;
+
+        return AuctionHouseMarketProfile::Late;
+    }
+#endif
+
+    return MarketProfile;
 }
 
 uint8 AuctionHouseBot::GetSellerProgressionState() const
@@ -342,6 +412,13 @@ bool AuctionHouseBot::IsItemAllowedForProgression(ItemTemplate const* itemProto,
     if (itemProto == nullptr)
         return false;
 
+    if (DisabledItems.find(itemProto->ItemId) != DisabledItems.end())
+        return false;
+
+    auto const minimumProgressionStateItr = MinimumProgressionStateByItemID.find(itemProto->ItemId);
+    if (minimumProgressionStateItr != MinimumProgressionStateByItemID.end() && progressionState < minimumProgressionStateItr->second)
+        return false;
+
     if (itemProto->Class == ITEM_CLASS_GEM && progressionState < 8)
         return false;
 
@@ -370,7 +447,7 @@ float AuctionHouseBot::GetMarketProfileMultiplier(ItemTemplate const* itemProto)
 
     float multiplier = 1.0f;
 
-    switch (MarketProfile)
+    switch (GetEffectiveMarketProfile())
     {
         case AuctionHouseMarketProfile::Launch:
         {
@@ -1102,6 +1179,7 @@ void AuctionHouseBot::PopulateItemCandidatesAndProportions()
 
     ItemIDsProducedByRecipes.clear();
     ItemIDsProducedByRecipes = GetItemIDsProducedByRecipes();
+    uint8 const currentProgressionState = GetSellerProgressionState();
 
     // Fill candidate item templates
     ItemTemplateContainer const* its = sObjectMgr->GetItemTemplateStore();
@@ -1195,6 +1273,13 @@ void AuctionHouseBot::PopulateItemCandidatesAndProportions()
         {
             if (debug_Out_Filters)
                 LOG_ERROR("module", "AuctionHouseBot: Item {} disabled (Configured by DisabledItemIDs and DisabledCraftedItemIDs)", itr->second.ItemId);
+            continue;
+        }
+
+        if (!IsItemAllowedForProgression(&itr->second, currentProgressionState))
+        {
+            if (debug_Out_Filters)
+                LOG_ERROR("module", "AuctionHouseBot: Item {} disabled (Progression state {})", itr->second.ItemId, currentProgressionState);
             continue;
         }
 
@@ -2329,8 +2414,6 @@ void AuctionHouseBot::InitializeConfiguration()
     CompleteItemValueOverrideDoApplyBuyoutVariations = sConfigMgr->GetOption<bool>("AuctionHouseBot.CompleteItemValueOverride.DoApplyBuyoutVariations", false);
     CompleteItemValueOverrideIgnorePotionLikeConsumables = sConfigMgr->GetOption<bool>("AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables", true);
     MarketProfile = GetMarketProfileFromConfig(sConfigMgr->GetOption<std::string>("AuctionHouseBot.MarketProfile", "LateWrath"));
-    LOG_INFO("module", "AuctionHouseBot: market profile set to {}", GetMarketProfileName());
-    LOG_INFO("module", "AuctionHouseBot: potion-like complete overrides {}", CompleteItemValueOverrideIgnorePotionLikeConsumables ? "enabled" : "disabled");
 
     // Buyer & Seller core properties
     SetCyclesBetweenBuyOrSell();
@@ -2588,6 +2671,11 @@ void AuctionHouseBot::InitializeConfiguration()
     ParseNumberListToSet(DisabledItems, sConfigMgr->GetOption<std::string>("AuctionHouseBot.DisabledInvalidItemIDs", ""), "AuctionHouseBot.DisabledInvalidItemIDs");
     ParseNumberListToSet(DisabledItems, sConfigMgr->GetOption<std::string>("AuctionHouseBot.DisabledCustomItemIDs", ""), "AuctionHouseBot.DisabledCustomItemIDs");
     AddValuesToSetByKeyMap(DisabledRecipeProducedItemClassSubClasses, sConfigMgr->GetOption<std::string>("AuctionHouseBot.DisabledRecipeProducedItemClassSubClasses", ""), 0, 20);
+    MinimumProgressionStateByItemID.clear();
+
+    LoadPricingCsvFile();
+    LOG_INFO("module", "AuctionHouseBot: market profile set to {}", GetMarketProfileName());
+    LOG_INFO("module", "AuctionHouseBot: potion-like complete overrides {}", CompleteItemValueOverrideIgnorePotionLikeConsumables ? "enabled" : "disabled");
 
     if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION))
     {
@@ -2809,11 +2897,11 @@ void AuctionHouseBot::AddItemValuePairsToItemIDMap(std::unordered_map<uint32, Va
         if (curBlock.find(":") != std::string::npos)
         {
             std::string itemIDString = curBlock.substr(0, curBlock.find(":"));
-            auto itemId = atoi(itemIDString.c_str());
+            auto itemId = Acore::StringTo<uint32>(TrimCopy(itemIDString));
             std::string valueString = curBlock.substr(curBlock.find(":") + 1);
-            auto convertedValue = atoi(valueString.c_str());
-            if (itemId > 0 && convertedValue > 0)
-                workingValueToItemIDMap.insert({ itemId, convertedValue });
+            auto convertedValue = Acore::StringTo<ValueType>(TrimCopy(valueString));
+            if (itemId && convertedValue && *itemId > 0 && *convertedValue > 0)
+                workingValueToItemIDMap[*itemId] = *convertedValue;
         }
     }
 }
@@ -2834,17 +2922,21 @@ void AuctionHouseBot::AddValuesToSetByKeyMap(std::map<uint32, std::unordered_set
         if (curBlock.find(":") != std::string::npos)
         {
             std::string itemIDString = curBlock.substr(0, curBlock.find(":"));
-            auto keyValue = atoi(itemIDString.c_str());
-            std::string valueString = curBlock.substr(curBlock.find(":") + 1);
+            auto keyValue = Acore::StringTo<uint32>(TrimCopy(itemIDString));
+            std::string valueString = TrimCopy(curBlock.substr(curBlock.find(":") + 1));
             if (valueString == "*")
             {
-                for (uint32 i = wildcardLowValue; i <= wildcardHighValue; i++)
-                    workingSetByKeyMap[keyValue].insert(i);
+                if (keyValue)
+                {
+                    for (uint32 i = wildcardLowValue; i <= wildcardHighValue; i++)
+                        workingSetByKeyMap[*keyValue].insert(i);
+                }
             }
             else
             {
-                auto convertedValue = atoi(valueString.c_str());
-                workingSetByKeyMap[keyValue].insert(convertedValue);
+                auto convertedValue = Acore::StringTo<uint32>(TrimCopy(valueString));
+                if (keyValue && convertedValue)
+                    workingSetByKeyMap[*keyValue].insert(*convertedValue);
             }
         }
     }
@@ -2906,7 +2998,457 @@ void AuctionHouseBot::AddToNumberListSet(std::set<uint32>& workingItemIDSet, uin
     }
 }
 
-const char* AuctionHouseBot::GetQualityName(ItemQualities quality)
+void AuctionHouseBot::LoadPricingCsvFile()
+{
+    std::string pricingCsvFile = sConfigMgr->GetOption<std::string>("AuctionHouseBot.PricingCsvFile", "modules/mod_ahbot_pricing.csv");
+    if (pricingCsvFile.empty())
+        return;
+
+    if (!pricingCsvFile.empty() && pricingCsvFile.front() != '/')
+        pricingCsvFile = sConfigMgr->GetConfigPath() + pricingCsvFile;
+
+    std::ifstream input(pricingCsvFile);
+    if (!input.is_open())
+    {
+        LOG_WARN("module", "AuctionHouseBot: pricing CSV '{}' was not found, using inline configuration values", pricingCsvFile);
+        return;
+    }
+
+    std::string line;
+    size_t lineNumber = 0;
+    uint32 appliedRows = 0;
+    while (std::getline(input, line))
+    {
+        ++lineNumber;
+
+        std::string trimmedLine = TrimCopy(line);
+        if (trimmedLine.empty() || trimmedLine.front() == '#')
+            continue;
+
+        std::string::size_type commaPos = trimmedLine.find(',');
+        if (commaPos == std::string::npos)
+        {
+            LOG_WARN("module", "AuctionHouseBot: skipping malformed pricing CSV line {} in '{}' (missing comma)", lineNumber, pricingCsvFile);
+            continue;
+        }
+
+        std::string optionName = TrimCopy(trimmedLine.substr(0, commaPos));
+        std::string value = TrimCopy(trimmedLine.substr(commaPos + 1));
+        value = StripOptionalQuotes(value);
+
+        if (optionName.empty())
+            continue;
+
+        if (ApplyPricingCsvOption(optionName, value, pricingCsvFile, lineNumber))
+            ++appliedRows;
+    }
+
+    LOG_INFO("module", "AuctionHouseBot: loaded {} pricing CSV overrides from '{}'", appliedRows, pricingCsvFile);
+}
+
+bool AuctionHouseBot::TryGetCategoryFromName(std::string const& categoryName, ItemClass& category) const
+{
+    for (uint32 i = 0; i < MAX_ITEM_CLASS; ++i)
+    {
+        ItemClass const candidate = static_cast<ItemClass>(i);
+        if (categoryName == GetCategoryName(candidate))
+        {
+            category = candidate;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool AuctionHouseBot::TryGetQualityFromName(std::string const& qualityName, ItemQualities& quality) const
+{
+    for (uint32 i = 0; i < MAX_ITEM_QUALITY; ++i)
+    {
+        ItemQualities const candidate = static_cast<ItemQualities>(i);
+        if (qualityName == GetQualityName(candidate))
+        {
+            quality = candidate;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool AuctionHouseBot::ApplyPricingCsvOption(std::string const& optionName, std::string const& value, std::string const& sourceName, size_t lineNumber)
+{
+    auto logInvalidValue = [&](char const* valueType)
+    {
+        LOG_WARN("module", "AuctionHouseBot: invalid {} value '{}' for '{}' at {}:{}", valueType, value, optionName, sourceName, lineNumber);
+    };
+
+    auto parseBool = [&](bool& target) -> bool
+    {
+        bool parsedValue = false;
+        if (!ParseCsvValue(value, parsedValue))
+        {
+            logInvalidValue("bool");
+            return false;
+        }
+
+        target = parsedValue;
+        return true;
+    };
+
+    if (optionName == "AuctionHouseBot.CompleteItemValueOverride.Enabled")
+        return parseBool(CompleteItemValueOverrideEnabled);
+
+    if (optionName == "AuctionHouseBot.CompleteItemValueOverride.Items")
+    {
+        AddItemValuePairsToItemIDMap(CompleteItemValueOverrideItemListByItemID, NormalizeCsvListValue(value));
+        return true;
+    }
+
+    if (optionName == "AuctionHouseBot.CompleteItemValueOverride.DoApplyBidVariations")
+        return parseBool(CompleteItemValueOverrideDoApplyBidVariations);
+
+    if (optionName == "AuctionHouseBot.CompleteItemValueOverride.DoApplyBuyoutVariations")
+        return parseBool(CompleteItemValueOverrideDoApplyBuyoutVariations);
+
+    if (optionName == "AuctionHouseBot.CompleteItemValueOverride.IgnorePotionLikeConsumables")
+        return parseBool(CompleteItemValueOverrideIgnorePotionLikeConsumables);
+
+    if (optionName == "AuctionHouseBot.MarketProfile")
+    {
+        MarketProfile = GetMarketProfileFromConfig(value);
+        return true;
+    }
+
+    if (optionName == "AuctionHouseBot.PriceMinimumCenterBase.UseItemSellPriceIfHigher")
+        return parseBool(UseItemSellPriceIfHigherThanPriceMinimumCenterBase);
+
+    if (optionName == "AuctionHouseBot.PriceMinimumCenterBase.OverrideItems")
+    {
+        AddItemValuePairsToItemIDMap(PriceMinimumCenterBaseOverridesByItemID, NormalizeCsvListValue(value));
+        return true;
+    }
+
+    if (optionName == "AuctionHouseBot.DisabledInvalidItemIDs")
+    {
+        ParseNumberListToSet(DisabledItems, NormalizeCsvListValue(value), "AuctionHouseBot.DisabledInvalidItemIDs");
+        return true;
+    }
+
+    if (optionName == "AuctionHouseBot.DisabledCustomItemIDs")
+    {
+        ParseNumberListToSet(DisabledItems, NormalizeCsvListValue(value), "AuctionHouseBot.DisabledCustomItemIDs");
+        return true;
+    }
+
+    if (optionName == "AuctionHouseBot.Progression.MinimumStateByItemID")
+    {
+        AddItemValuePairsToItemIDMap(MinimumProgressionStateByItemID, NormalizeCsvListValue(value));
+        return true;
+    }
+
+    static constexpr std::string_view priceMultiplierCategoryPrefix = "AuctionHouseBot.PriceMultiplier.Category.";
+    static constexpr std::string_view priceMultiplierQualityPrefix = "AuctionHouseBot.PriceMultiplier.Quality.";
+    static constexpr std::string_view priceMultiplierItemLevelPrefix = "AuctionHouseBot.PriceMultiplier.ItemLevel.Category.";
+    static constexpr std::string_view priceMultiplierCategoryMatrixPrefix = "AuctionHouseBot.PriceMultiplier.Category";
+    static constexpr std::string_view priceMultiplierMountPrefix = "AuctionHouseBot.PriceMultiplier.CategoryMount.Quality";
+    static constexpr std::string_view priceMultiplierPetPrefix = "AuctionHouseBot.PriceMultiplier.CategoryPet.Quality";
+    static constexpr std::string_view advancedPricingPrefix = "AuctionHouseBot.AdvancedPricing.";
+    static constexpr std::string_view priceMinimumPrefix = "AuctionHouseBot.PriceMinimumCenterBase.";
+
+    if (StartsWith(optionName, std::string(priceMultiplierMountPrefix)))
+    {
+        std::string qualityName = optionName.substr(priceMultiplierMountPrefix.size());
+        ItemQualities quality;
+        if (!TryGetQualityFromName(qualityName, quality))
+        {
+            LOG_WARN("module", "AuctionHouseBot: unknown quality '{}' for '{}' at {}:{}", qualityName, optionName, sourceName, lineNumber);
+            return false;
+        }
+
+        float parsedValue = 0.0f;
+        if (!ParseCsvValue(value, parsedValue))
+        {
+            logInvalidValue("float");
+            return false;
+        }
+
+        switch (quality)
+        {
+            case ITEM_QUALITY_POOR:       PriceMultiplierCategoryMountQualityPoor = parsedValue; return true;
+            case ITEM_QUALITY_NORMAL:     PriceMultiplierCategoryMountQualityNormal = parsedValue; return true;
+            case ITEM_QUALITY_UNCOMMON:   PriceMultiplierCategoryMountQualityUncommon = parsedValue; return true;
+            case ITEM_QUALITY_RARE:       PriceMultiplierCategoryMountQualityRare = parsedValue; return true;
+            case ITEM_QUALITY_EPIC:       PriceMultiplierCategoryMountQualityEpic = parsedValue; return true;
+            case ITEM_QUALITY_LEGENDARY:  PriceMultiplierCategoryMountQualityLegendary = parsedValue; return true;
+            case ITEM_QUALITY_ARTIFACT:   PriceMultiplierCategoryMountQualityArtifact = parsedValue; return true;
+            case ITEM_QUALITY_HEIRLOOM:   PriceMultiplierCategoryMountQualityHeirloom = parsedValue; return true;
+            default:
+                return false;
+        }
+    }
+
+    if (StartsWith(optionName, std::string(priceMultiplierPetPrefix)))
+    {
+        std::string qualityName = optionName.substr(priceMultiplierPetPrefix.size());
+        ItemQualities quality;
+        if (!TryGetQualityFromName(qualityName, quality))
+        {
+            LOG_WARN("module", "AuctionHouseBot: unknown quality '{}' for '{}' at {}:{}", qualityName, optionName, sourceName, lineNumber);
+            return false;
+        }
+
+        float parsedValue = 0.0f;
+        if (!ParseCsvValue(value, parsedValue))
+        {
+            logInvalidValue("float");
+            return false;
+        }
+
+        switch (quality)
+        {
+            case ITEM_QUALITY_POOR:       PriceMultiplierCategoryPetQualityPoor = parsedValue; return true;
+            case ITEM_QUALITY_NORMAL:     PriceMultiplierCategoryPetQualityNormal = parsedValue; return true;
+            case ITEM_QUALITY_UNCOMMON:   PriceMultiplierCategoryPetQualityUncommon = parsedValue; return true;
+            case ITEM_QUALITY_RARE:       PriceMultiplierCategoryPetQualityRare = parsedValue; return true;
+            case ITEM_QUALITY_EPIC:       PriceMultiplierCategoryPetQualityEpic = parsedValue; return true;
+            case ITEM_QUALITY_LEGENDARY:  PriceMultiplierCategoryPetQualityLegendary = parsedValue; return true;
+            case ITEM_QUALITY_ARTIFACT:   PriceMultiplierCategoryPetQualityArtifact = parsedValue; return true;
+            case ITEM_QUALITY_HEIRLOOM:   PriceMultiplierCategoryPetQualityHeirloom = parsedValue; return true;
+            default:
+                return false;
+        }
+    }
+
+    if (StartsWith(optionName, std::string(priceMultiplierCategoryPrefix)))
+    {
+        std::string categoryName = optionName.substr(priceMultiplierCategoryPrefix.size());
+        ItemClass category;
+        if (TryGetCategoryFromName(categoryName, category))
+        {
+            float parsedValue = 0.0f;
+            if (!ParseCsvValue(value, parsedValue))
+            {
+                logInvalidValue("float");
+                return false;
+            }
+
+            switch (category)
+            {
+                case ITEM_CLASS_CONSUMABLE:   PriceMultiplierCategoryConsumable = parsedValue; return true;
+                case ITEM_CLASS_CONTAINER:    PriceMultiplierCategoryContainer = parsedValue; return true;
+                case ITEM_CLASS_WEAPON:       PriceMultiplierCategoryWeapon = parsedValue; return true;
+                case ITEM_CLASS_GEM:          PriceMultiplierCategoryGem = parsedValue; return true;
+                case ITEM_CLASS_ARMOR:        PriceMultiplierCategoryArmor = parsedValue; return true;
+                case ITEM_CLASS_REAGENT:      PriceMultiplierCategoryReagent = parsedValue; return true;
+                case ITEM_CLASS_PROJECTILE:   PriceMultiplierCategoryProjectile = parsedValue; return true;
+                case ITEM_CLASS_TRADE_GOODS:  PriceMultiplierCategoryTradeGood = parsedValue; return true;
+                case ITEM_CLASS_GENERIC:      PriceMultiplierCategoryGeneric = parsedValue; return true;
+                case ITEM_CLASS_RECIPE:       PriceMultiplierCategoryRecipe = parsedValue; return true;
+                case ITEM_CLASS_QUIVER:       PriceMultiplierCategoryQuiver = parsedValue; return true;
+                case ITEM_CLASS_QUEST:        PriceMultiplierCategoryQuest = parsedValue; return true;
+                case ITEM_CLASS_KEY:          PriceMultiplierCategoryKey = parsedValue; return true;
+                case ITEM_CLASS_MISC:         PriceMultiplierCategoryMisc = parsedValue; return true;
+                case ITEM_CLASS_GLYPH:        PriceMultiplierCategoryGlyph = parsedValue; return true;
+                case ITEM_CLASS_MONEY:
+                case ITEM_CLASS_PERMANENT:
+                default:
+                    return false;
+            }
+        }
+    }
+
+    if (StartsWith(optionName, std::string(priceMultiplierQualityPrefix)))
+    {
+        std::string qualityName = optionName.substr(priceMultiplierQualityPrefix.size());
+        ItemQualities quality;
+        if (!TryGetQualityFromName(qualityName, quality))
+        {
+            LOG_WARN("module", "AuctionHouseBot: unknown quality '{}' for '{}' at {}:{}", qualityName, optionName, sourceName, lineNumber);
+            return false;
+        }
+
+        float parsedValue = 0.0f;
+        if (!ParseCsvValue(value, parsedValue))
+        {
+            logInvalidValue("float");
+            return false;
+        }
+
+        switch (quality)
+        {
+            case ITEM_QUALITY_POOR:       PriceMultiplierQualityPoor = parsedValue; return true;
+            case ITEM_QUALITY_NORMAL:     PriceMultiplierQualityNormal = parsedValue; return true;
+            case ITEM_QUALITY_UNCOMMON:   PriceMultiplierQualityUncommon = parsedValue; return true;
+            case ITEM_QUALITY_RARE:       PriceMultiplierQualityRare = parsedValue; return true;
+            case ITEM_QUALITY_EPIC:       PriceMultiplierQualityEpic = parsedValue; return true;
+            case ITEM_QUALITY_LEGENDARY:  PriceMultiplierQualityLegendary = parsedValue; return true;
+            case ITEM_QUALITY_ARTIFACT:   PriceMultiplierQualityArtifact = parsedValue; return true;
+            case ITEM_QUALITY_HEIRLOOM:   PriceMultiplierQualityHeirloom = parsedValue; return true;
+            default:
+                return false;
+        }
+    }
+
+    if (StartsWith(optionName, std::string(priceMultiplierItemLevelPrefix)))
+    {
+        std::string categoryName = optionName.substr(priceMultiplierItemLevelPrefix.size());
+        ItemClass category;
+        if (!TryGetCategoryFromName(categoryName, category))
+        {
+            LOG_WARN("module", "AuctionHouseBot: unknown category '{}' for '{}' at {}:{}", categoryName, optionName, sourceName, lineNumber);
+            return false;
+        }
+
+        float parsedValue = 0.0f;
+        if (!ParseCsvValue(value, parsedValue))
+        {
+            logInvalidValue("float");
+            return false;
+        }
+
+        switch (category)
+        {
+            case ITEM_CLASS_CONSUMABLE:   PriceMultiplierItemLevelCategoryConsumable = parsedValue; return true;
+            case ITEM_CLASS_CONTAINER:    PriceMultiplierItemLevelCategoryContainer = parsedValue; return true;
+            case ITEM_CLASS_WEAPON:       PriceMultiplierItemLevelCategoryWeapon = parsedValue; return true;
+            case ITEM_CLASS_GEM:          PriceMultiplierItemLevelCategoryGem = parsedValue; return true;
+            case ITEM_CLASS_ARMOR:        PriceMultiplierItemLevelCategoryArmor = parsedValue; return true;
+            case ITEM_CLASS_REAGENT:      PriceMultiplierItemLevelCategoryReagent = parsedValue; return true;
+            case ITEM_CLASS_PROJECTILE:   PriceMultiplierItemLevelCategoryProjectile = parsedValue; return true;
+            case ITEM_CLASS_TRADE_GOODS:  PriceMultiplierItemLevelCategoryTradeGood = parsedValue; return true;
+            case ITEM_CLASS_GENERIC:      PriceMultiplierItemLevelCategoryGeneric = parsedValue; return true;
+            case ITEM_CLASS_RECIPE:       PriceMultiplierItemLevelCategoryRecipe = parsedValue; return true;
+            case ITEM_CLASS_QUIVER:       PriceMultiplierItemLevelCategoryQuiver = parsedValue; return true;
+            case ITEM_CLASS_QUEST:        PriceMultiplierItemLevelCategoryQuest = parsedValue; return true;
+            case ITEM_CLASS_KEY:          PriceMultiplierItemLevelCategoryKey = parsedValue; return true;
+            case ITEM_CLASS_MISC:         PriceMultiplierItemLevelCategoryMisc = parsedValue; return true;
+            case ITEM_CLASS_GLYPH:        PriceMultiplierItemLevelCategoryGlyph = parsedValue; return true;
+            case ITEM_CLASS_MONEY:
+            case ITEM_CLASS_PERMANENT:
+            default:
+                return false;
+        }
+    }
+
+    if (StartsWith(optionName, std::string(advancedPricingPrefix)))
+    {
+        std::string optionSuffix = optionName.substr(advancedPricingPrefix.size());
+
+        if (optionSuffix == "Consumable.Potion.Enabled")
+            return parseBool(AdvancedPricingConsumablePotionEnabled);
+        if (optionSuffix == "Consumable.Elixir.Enabled")
+            return parseBool(AdvancedPricingConsumableElixirEnabled);
+        if (optionSuffix == "Consumable.Flask.Enabled")
+            return parseBool(AdvancedPricingConsumableFlaskEnabled);
+        if (optionSuffix == "Gem.Enabled")
+            return parseBool(AdvancedPricingGemEnabled);
+        if (optionSuffix == "TradeGood.Cloth.Enabled")
+            return parseBool(AdvancedPricingTradeGoodClothEnabled);
+        if (optionSuffix == "TradeGood.Herb.Enabled")
+            return parseBool(AdvancedPricingTradeGoodHerbEnabled);
+        if (optionSuffix == "TradeGood.MetalStone.Enabled")
+            return parseBool(AdvancedPricingTradeGoodMetalStoneEnabled);
+        if (optionSuffix == "TradeGood.Leather.Enabled")
+            return parseBool(AdvancedPricingTradeGoodLeatherEnabled);
+        if (optionSuffix == "TradeGood.Enchanting.Enabled")
+            return parseBool(AdvancedPricingTradeGoodEnchantingEnabled);
+        if (optionSuffix == "TradeGood.Elemental.Enabled")
+            return parseBool(AdvancedPricingTradeGoodElementalEnabled);
+        if (optionSuffix == "TradeGood.Meat.Enabled")
+            return parseBool(AdvancedPricingTradeGoodMeatEnabled);
+        if (optionSuffix == "Misc.Junk.Enabled")
+            return parseBool(AdvancedPricingMiscJunkEnabled);
+        if (optionSuffix == "Misc.Mount.Enabled")
+            return parseBool(AdvancedPricingMiscMountEnabled);
+        if (optionSuffix == "Misc.Pet.Enabled")
+            return parseBool(AdvancedPricingMiscPetEnabled);
+
+        return false;
+    }
+
+    if (StartsWith(optionName, std::string(priceMinimumPrefix)))
+    {
+        std::string optionSuffix = optionName.substr(priceMinimumPrefix.size());
+        uint32 parsedUInt32 = 0;
+
+        if (optionSuffix == "UseItemSellPriceIfHigher")
+            return parseBool(UseItemSellPriceIfHigherThanPriceMinimumCenterBase);
+
+        if (!ParseCsvValue(value, parsedUInt32))
+        {
+            logInvalidValue("uint32");
+            return false;
+        }
+
+        if (optionSuffix == "Consumable")
+            PriceMinimumCenterBaseConsumable = parsedUInt32;
+        else if (optionSuffix == "Container")
+            PriceMinimumCenterBaseContainer = parsedUInt32;
+        else if (optionSuffix == "Weapon")
+            PriceMinimumCenterBaseWeapon = parsedUInt32;
+        else if (optionSuffix == "Gem")
+            PriceMinimumCenterBaseGem = parsedUInt32;
+        else if (optionSuffix == "Armor")
+            PriceMinimumCenterBaseArmor = parsedUInt32;
+        else if (optionSuffix == "Reagent")
+            PriceMinimumCenterBaseReagent = parsedUInt32;
+        else if (optionSuffix == "Projectile")
+            PriceMinimumCenterBaseProjectile = parsedUInt32;
+        else if (optionSuffix == "TradeGood")
+            PriceMinimumCenterBaseTradeGood = parsedUInt32;
+        else if (optionSuffix == "Generic")
+            PriceMinimumCenterBaseGeneric = parsedUInt32;
+        else if (optionSuffix == "Recipe")
+            PriceMinimumCenterBaseRecipe = parsedUInt32;
+        else if (optionSuffix == "Quiver")
+            PriceMinimumCenterBaseQuiver = parsedUInt32;
+        else if (optionSuffix == "Quest")
+            PriceMinimumCenterBaseQuest = parsedUInt32;
+        else if (optionSuffix == "Key")
+            PriceMinimumCenterBaseKey = parsedUInt32;
+        else if (optionSuffix == "Misc")
+            PriceMinimumCenterBaseMisc = parsedUInt32;
+        else if (optionSuffix == "Glyph")
+            PriceMinimumCenterBaseGlyph = parsedUInt32;
+        else
+            return false;
+
+        return true;
+    }
+
+    if (optionName.find(".Quality", priceMultiplierCategoryMatrixPrefix.size()) != std::string::npos &&
+        StartsWith(optionName, std::string(priceMultiplierCategoryMatrixPrefix)))
+    {
+        std::string remainder = optionName.substr(priceMultiplierCategoryMatrixPrefix.size());
+        std::string::size_type qualityPos = remainder.find(".Quality");
+        if (qualityPos != std::string::npos)
+        {
+            std::string categoryName = remainder.substr(0, qualityPos);
+            std::string qualityName = remainder.substr(qualityPos + 8);
+
+            ItemClass category;
+            ItemQualities quality;
+            if (TryGetCategoryFromName(categoryName, category) && TryGetQualityFromName(qualityName, quality))
+            {
+                float parsedValue = 0.0f;
+                if (!ParseCsvValue(value, parsedValue))
+                {
+                    logInvalidValue("float");
+                    return false;
+                }
+
+                PriceMultiplierCategoryQuality[category][quality] = parsedValue;
+                return true;
+            }
+        }
+    }
+
+    LOG_WARN("module", "AuctionHouseBot: unknown pricing CSV option '{}' at {}:{}", optionName, sourceName, lineNumber);
+    return false;
+}
+
+const char* AuctionHouseBot::GetQualityName(ItemQualities quality) const
 {
     switch (quality)
     {
@@ -2922,7 +3464,7 @@ const char* AuctionHouseBot::GetQualityName(ItemQualities quality)
     }
 }
 
-const char* AuctionHouseBot::GetCategoryName(ItemClass category)
+const char* AuctionHouseBot::GetCategoryName(ItemClass category) const
 {
     switch (category)
     {

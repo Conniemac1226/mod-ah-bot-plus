@@ -24,6 +24,7 @@
 #include "Common.h"
 #include "ObjectGuid.h"
 
+#include <cstddef>
 #include <map>
 #include <vector>
 
@@ -169,6 +170,7 @@ private:
     std::unordered_set<uint32> ItemIDsProducedByRecipes;
     std::map<uint32, std::unordered_set<uint32>> DisabledRecipeProducedItemClassSubClasses;
     std::set<uint32> DisabledItems;
+    std::unordered_map<uint32, uint8> MinimumProgressionStateByItemID;
     bool ListedItemLevelRestrictedEnabled;
     bool ListedItemLevelRestrictedUseCraftedItemForCalculation;
     uint32 ListedItemLevelMin;
@@ -365,13 +367,18 @@ public:
     void AddCharacters(std::string characterGUIDString);
     void ParseNumberListToSet(std::set<uint32>& workingItemIDSet, std::string itemString, const char* parentOperationName);
     void AddToNumberListSet(std::set<uint32>& workingItemIDSet, uint32 itemID, const char* parentOperationName);
-    const char* GetQualityName(ItemQualities quality);
-    const char* GetCategoryName(ItemClass category);
+    void LoadPricingCsvFile();
+    bool ApplyPricingCsvOption(std::string const& optionName, std::string const& value, std::string const& sourceName, size_t lineNumber);
+    bool TryGetCategoryFromName(std::string const& categoryName, ItemClass& category) const;
+    bool TryGetQualityFromName(std::string const& qualityName, ItemQualities& quality) const;
+    const char* GetQualityName(ItemQualities quality) const;
+    const char* GetCategoryName(ItemClass category) const;
     uint32 GetStackSizeForItem(ItemTemplate const* itemProto) const;
     void CalculateItemValue(ItemTemplate const* itemProto, uint64& outBidPrice, uint64& outBuyoutPrice);
     bool ShouldBypassCompleteItemValueOverride(ItemTemplate const* itemProto) const;
     AuctionHouseMarketProfile GetMarketProfileFromConfig(std::string const& marketProfileName) const;
     const char* GetMarketProfileName() const;
+    AuctionHouseMarketProfile GetEffectiveMarketProfile() const;
     float GetMarketProfileMultiplier(ItemTemplate const* itemProto) const;
     uint8 GetSellerProgressionState() const;
     uint32 GetProgressionItemLevelCap(uint8 progressionState) const;
